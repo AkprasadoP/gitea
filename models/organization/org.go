@@ -74,6 +74,21 @@ func (err ErrUserNotAllowedCreateOrg) Unwrap() error {
 	return util.ErrPermissionDenied
 }
 
+// ErrSubgroupDepthExceeded represents a "SubgroupDepthExceeded" kind of error.
+type ErrSubgroupDepthExceeded struct {
+	MaxDepth int
+}
+
+// IsErrSubgroupDepthExceeded checks if an error is an ErrSubgroupDepthExceeded.
+func IsErrSubgroupDepthExceeded(err error) bool {
+	_, ok := err.(ErrSubgroupDepthExceeded)
+	return ok
+}
+
+func (err ErrSubgroupDepthExceeded) Error() string {
+	return fmt.Sprintf("subgroup nesting limit of %d exceeded", err.MaxDepth)
+}
+
 // Organization represents an organization
 type Organization user_model.User
 
@@ -295,6 +310,12 @@ func CreateOrganization(ctx context.Context, org *Organization, owner *user_mode
 		return err
 	} else if isExist {
 		return user_model.ErrUserAlreadyExist{Name: org.Name}
+	}
+
+	if org.AsUser().ParentID > 0 {
+		if err := checkSubgroupDepth(ctx, org.AsUser().ParentID); err != nil {
+			return err
+		}
 	}
 
 	org.LowerName = strings.ToLower(org.Name)
@@ -595,4 +616,85 @@ func getUserTeamIDsQueryBuilder(orgID, userID int64) *builder.Builder {
 			"team_user.org_id": orgID,
 			"team_user.uid":    userID,
 		})
+}
+
+// IsSubgroup returns true if this org is nested under another org
+func (org *Organization) IsSubgroup() bool {
+	return org.AsUser().ParentID > 0
+}
+
+// GetParent returns the parent organization, or nil if top-level
+func (org *Organization) GetParent(ctx context.Context) (*Organization, error) {
+	if !org.IsSubgroup() {
+		return nil, nil
+	}
+	parent, err := GetOrgByID(ctx, org.AsUser().ParentID)
+	if err != nil {
+		return nil, err
+	}
+	return parent, nil
+}
+
+// GetSubgroups returns all direct children of this org
+func (org *Organization) GetSubgroups(ctx context.Context) ([]*Organization, error) {
+	var orgs []*Organization
+	return orgs, db.GetEngine(ctx).
+		Where("parent_id = ? AND type = ?", org.ID, user_model.UserTypeOrganization).
+		Find(&orgs)
+}
+
+// FullPath returns "parent/child" or just "orgname" for top-level
+func (org *Organization) FullPath(ctx context.Context) (string, error) {
+	if !org.IsSubgroup() {
+		return org.Name, nil
+	}
+	parent, err := org.GetParent(ctx)
+	if err != nil {
+		return org.Name, err
+	}
+	return parent.Name + "/" + org.Name, nil
+}
+
+// HasParentOrgAccess checks if a user is a member of any ancestor org
+func HasParentOrgAccess(ctx context.Context, userID, orgID int64) (bool, error) {
+	visited := make(map[int64]bool)
+	currentID := orgID
+	for {
+		if visited[currentID] {
+			return false, nil // cycle detected, bail out
+		}
+		visited[currentID] = true
+
+		org, err := GetOrgByID(ctx, currentID)
+		if err != nil || !org.IsSubgroup() {
+			return false, err
+		}
+		isMember, err := IsOrganizationMember(ctx, org.AsUser().ParentID, userID)
+		if err != nil {
+			return false, err
+		}
+		if isMember {
+			return true, nil
+		}
+		currentID = org.AsUser().ParentID
+	}
+}
+
+const MaxSubgroupDepth = 5
+
+func checkSubgroupDepth(ctx context.Context, parentID int64) error {
+	depth := 0
+	currentID := parentID
+	for currentID != 0 {
+		org, err := GetOrgByID(ctx, currentID)
+		if err != nil {
+			return err
+		}
+		currentID = org.AsUser().ParentID
+		depth++
+		if depth > MaxSubgroupDepth {
+			return ErrSubgroupDepthExceeded{MaxDepth: MaxSubgroupDepth}
+		}
+	}
+	return nil
 }

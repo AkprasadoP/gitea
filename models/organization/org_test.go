@@ -4,6 +4,7 @@
 package organization_test
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 	"testing"
@@ -539,4 +540,95 @@ func TestCreateOrganization4(t *testing.T) {
 	assert.Error(t, err)
 	assert.True(t, db.IsErrNameReserved(err))
 	unittest.CheckConsistencyFor(t, &organization.Organization{}, &organization.Team{})
+}
+
+func TestIsSubgroup(t *testing.T) {
+	org := &organization.Organization{}
+	org.AsUser().ParentID = 0
+	assert.False(t, org.IsSubgroup())
+
+	org.AsUser().ParentID = 100
+	assert.True(t, org.IsSubgroup())
+}
+
+func TestGetParent(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+
+	parentOrg := &organization.Organization{Name: "parent_org_test"}
+	assert.NoError(t, organization.CreateOrganization(t.Context(), parentOrg, owner))
+	parentOrg = unittest.AssertExistsAndLoadBean(t, &organization.Organization{Name: parentOrg.Name, Type: user_model.UserTypeOrganization})
+
+	childOrg := &organization.Organization{Name: "child_org_test"}
+	childOrg.AsUser().ParentID = parentOrg.ID
+	assert.NoError(t, organization.CreateOrganization(t.Context(), childOrg, owner))
+	childOrg = unittest.AssertExistsAndLoadBean(t, &organization.Organization{Name: childOrg.Name, Type: user_model.UserTypeOrganization})
+
+	parent, err := childOrg.GetParent(t.Context())
+	assert.NoError(t, err)
+	assert.Equal(t, parentOrg.ID, parent.ID)
+
+	nilParent, err := parentOrg.GetParent(t.Context())
+	assert.NoError(t, err)
+	assert.Nil(t, nilParent)
+}
+
+func TestCheckSubgroupDepth(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+
+	var parentID int64 = 0
+	for i := 1; i <= 6; i++ {
+		org := &organization.Organization{Name: fmt.Sprintf("depth_org_%d", i)}
+		org.AsUser().ParentID = parentID
+		err := organization.CreateOrganization(t.Context(), org, owner)
+		assert.NoError(t, err, "failed at level %d", i)
+		org = unittest.AssertExistsAndLoadBean(t, &organization.Organization{Name: org.Name, Type: user_model.UserTypeOrganization})
+		parentID = org.ID
+	}
+
+	// Depth 7 should fail
+	org7 := &organization.Organization{Name: "depth_org_7"}
+	org7.AsUser().ParentID = parentID
+	err := organization.CreateOrganization(t.Context(), org7, owner)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "subgroup nesting limit")
+	}
+}
+
+func TestHasParentOrgAccess(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+	member := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 4})
+	outsider := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 5})
+
+	// Create Parent
+	parentOrg := &organization.Organization{Name: "access_parent_org"}
+	assert.NoError(t, organization.CreateOrganization(t.Context(), parentOrg, owner))
+	parentOrg = unittest.AssertExistsAndLoadBean(t, &organization.Organization{Name: parentOrg.Name, Type: user_model.UserTypeOrganization})
+
+	// Add member to parent
+	err := organization.AddOrgUser(t.Context(), parentOrg.ID, member.ID)
+	assert.NoError(t, err)
+
+	// Create Child
+	childOrg := &organization.Organization{Name: "access_child_org"}
+	childOrg.AsUser().ParentID = parentOrg.ID
+	assert.NoError(t, organization.CreateOrganization(t.Context(), childOrg, owner))
+	childOrg = unittest.AssertExistsAndLoadBean(t, &organization.Organization{Name: childOrg.Name, Type: user_model.UserTypeOrganization})
+
+	// Owner should have access
+	access, err := organization.HasParentOrgAccess(t.Context(), owner.ID, childOrg.ID)
+	assert.NoError(t, err)
+	assert.True(t, access)
+
+	// Member of parent should have access
+	access, err = organization.HasParentOrgAccess(t.Context(), member.ID, childOrg.ID)
+	assert.NoError(t, err)
+	assert.True(t, access)
+
+	// Outsider should not have access
+	access, err = organization.HasParentOrgAccess(t.Context(), outsider.ID, childOrg.ID)
+	assert.NoError(t, err)
+	assert.False(t, access)
 }

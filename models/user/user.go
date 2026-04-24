@@ -144,6 +144,7 @@ type User struct {
 	NumRepos     int
 
 	// For organization
+	ParentID                  int64               `xorm:"INDEX DEFAULT 0"`
 	NumTeams                  int
 	NumMembers                int
 	Visibility                structs.VisibleType `xorm:"NOT NULL DEFAULT 0"`

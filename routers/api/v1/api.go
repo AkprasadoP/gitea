@@ -1613,6 +1613,8 @@ func Routes() *web.Router {
 				Patch(reqToken(), reqOrgOwnership(), bind(api.EditOrgOption{}), org.Edit).
 				Delete(reqToken(), reqOrgOwnership(), org.Delete)
 			m.Post("/rename", reqToken(), reqOrgOwnership(), bind(api.RenameOrgOption{}), org.Rename)
+			m.Post("/subgroups", reqToken(), reqOrgOwnership(), bind(api.CreateOrgOption{}), org.CreateSubgroup)
+			m.Get("/subgroups", reqToken(), org.ListSubgroups)
 			m.Combo("/repos").Get(user.ListOrgRepos).
 				Post(reqToken(), bind(api.CreateRepoOption{}), repo.CreateOrgRepo).
 				Delete(reqToken(), reqOrgOwnership(), tokenRequiresScopes(auth_model.AccessTokenScopeCategoryRepository), org.DeleteOrgRepos)

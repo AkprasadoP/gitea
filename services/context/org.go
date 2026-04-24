@@ -107,6 +107,13 @@ func OrgAssignment(orgAssignmentOpts OrgAssignmentOptions) func(ctx *Context) {
 		ctx.ContextUser = org.AsUser()
 		ctx.Data["Org"] = org
 
+		if org.IsSubgroup() {
+			parent, err := organization.GetOrgByID(ctx, org.AsUser().ParentID)
+			if err == nil {
+				ctx.Data["ParentOrg"] = parent
+			}
+		}
+
 		// Admin has super access.
 		if ctx.IsSigned && ctx.Doer.IsAdmin {
 			ctx.Org.IsOwner = true

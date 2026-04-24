@@ -17,7 +17,22 @@
 							{{ctx.AvatarUtils.Avatar . 28 "mini"}}
 						</div>
 						<div class="flex-item-main">
-							<div class="flex-item-title">{{template "shared/user/name" .}}</div>
+							<div class="flex-item-title">
+								{{if .IsSubgroup}}
+									{{$parent := .GetParent ctx}}
+									{{if $parent}}
+										<div class="ui breadcrumb">
+											<a class="section" href="{{$parent.HomeLink}}">{{$parent.Name}}</a>
+											<span class="divider">/</span>
+											<a class="active section" href="{{.HomeLink}}">{{.Name}}{{if .FullName}} ({{.FullName}}){{end}}</a>
+										</div>
+									{{else}}
+										{{template "shared/user/name" .}}
+									{{end}}
+								{{else}}
+									{{template "shared/user/name" .}}
+								{{end}}
+							</div>
 							<div class="flex-text-body">
 								{{.Description}}
 							</div>

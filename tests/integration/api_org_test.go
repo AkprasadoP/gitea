@@ -31,6 +31,7 @@ func TestAPIOrg(t *testing.T) {
 	t.Run("General", testAPIOrgGeneral)
 	t.Run("CreateAndRename", testAPIOrgCreateRename)
 	t.Run("DeleteOrgRepos", testAPIDeleteOrgRepos)
+	t.Run("Subgroups", testAPIOrgSubgroups)
 }
 
 func testAPIOrgCreateRename(t *testing.T) {
@@ -296,4 +297,69 @@ func testAPIDeleteOrgRepos(t *testing.T) {
 		req = NewRequest(t, "DELETE", fmt.Sprintf("/api/v1/orgs/%s/repos", org3.Name)).AddTokenAuth(token)
 		MakeRequest(t, req, http.StatusNoContent) // The org contains no repositories, so the API should return StatusNoContent
 	})
+}
+
+func testAPIOrgSubgroups(t *testing.T) {
+	token := getUserToken(t, "user1", auth_model.AccessTokenScopeWriteOrganization)
+
+	// 1. Success case
+	org := api.CreateOrgOption{
+		UserName:    "parent_api_org",
+		FullName:    "Parent API Org",
+	}
+	req := NewRequestWithJSON(t, "POST", "/api/v1/orgs", &org).AddTokenAuth(token)
+	resp := MakeRequest(t, req, http.StatusCreated)
+
+	var parentOrg api.Organization
+	DecodeJSON(t, resp, &parentOrg)
+
+	subgroup := api.CreateOrgOption{
+		UserName:    "child_api_org",
+		FullName:    "Child API Org",
+	}
+	req = NewRequestWithJSON(t, "POST", fmt.Sprintf("/api/v1/orgs/%s/subgroups", parentOrg.Name), &subgroup).AddTokenAuth(token)
+	resp = MakeRequest(t, req, http.StatusCreated)
+
+	var childOrg api.Organization
+	DecodeJSON(t, resp, &childOrg)
+	assert.Equal(t, subgroup.UserName, childOrg.Name)
+
+	// Verify it shows up in ListSubgroups
+	req = NewRequestf(t, "GET", "/api/v1/orgs/%s/subgroups", parentOrg.Name).AddTokenAuth(token)
+	resp = MakeRequest(t, req, http.StatusOK)
+	var subgroups []*api.Organization
+	DecodeJSON(t, resp, &subgroups)
+	assert.Len(t, subgroups, 1)
+	assert.Equal(t, childOrg.Name, subgroups[0].Name)
+
+	// 2. Slash in name rejection
+	badSubgroup := api.CreateOrgOption{
+		UserName: "child/org",
+	}
+	req = NewRequestWithJSON(t, "POST", fmt.Sprintf("/api/v1/orgs/%s/subgroups", parentOrg.Name), &badSubgroup).AddTokenAuth(token)
+	MakeRequest(t, req, http.StatusUnprocessableEntity)
+
+	// 3. Non-owner rejection
+	nonOwnerSession := loginUser(t, "user4")
+	nonOwnerToken := getTokenForLoggedInUser(t, nonOwnerSession, auth_model.AccessTokenScopeWriteOrganization)
+	req = NewRequestWithJSON(t, "POST", fmt.Sprintf("/api/v1/orgs/%s/subgroups", parentOrg.Name), &subgroup).AddTokenAuth(nonOwnerToken)
+	MakeRequest(t, req, http.StatusForbidden)
+
+	// 4. Depth limit rejection
+	currentParentName := childOrg.Name
+	for i := 2; i <= 5; i++ {
+		nextSubgroup := api.CreateOrgOption{
+			UserName: fmt.Sprintf("child_api_org_%d", i),
+		}
+		req = NewRequestWithJSON(t, "POST", fmt.Sprintf("/api/v1/orgs/%s/subgroups", currentParentName), &nextSubgroup).AddTokenAuth(token)
+		resp = MakeRequest(t, req, http.StatusCreated)
+		currentParentName = nextSubgroup.UserName
+	}
+
+	// This is depth 6, should fail
+	failSubgroup := api.CreateOrgOption{
+		UserName: "child_api_org_6",
+	}
+	req = NewRequestWithJSON(t, "POST", fmt.Sprintf("/api/v1/orgs/%s/subgroups", currentParentName), &failSubgroup).AddTokenAuth(token)
+	MakeRequest(t, req, http.StatusUnprocessableEntity)
 }

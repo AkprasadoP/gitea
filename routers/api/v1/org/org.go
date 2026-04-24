@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	activities_model "code.gitea.io/gitea/models/activities"
 	"code.gitea.io/gitea/models/db"
@@ -570,4 +571,118 @@ func DeleteOrgRepos(ctx *context.APIContext) {
 	go deleteOrgReposBackground(graceful.GetManager().ShutdownContext(), ctx.Org.Organization, repoIDs, ctx.Doer)
 
 	ctx.Status(http.StatusAccepted)
+}
+
+// ListSubgroups returns a list of subgroups for an organization
+func ListSubgroups(ctx *context.APIContext) {
+	// swagger:operation GET /orgs/{org}/subgroups organization orgListSubgroups
+	// ---
+	// summary: List an organization's subgroups
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: org
+	//   in: path
+	//   description: name of the organization
+	//   type: string
+	//   required: true
+	// - name: page
+	//   in: query
+	//   description: page number of results to return (1-based)
+	//   type: integer
+	// - name: limit
+	//   in: query
+	//   description: page size of results
+	//   type: integer
+	// responses:
+	//   "200":
+	//     "$ref": "#/responses/OrganizationList"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
+
+	subgroups, err := ctx.Org.Organization.GetSubgroups(ctx)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+
+	apiOrgs := make([]*api.Organization, len(subgroups))
+	for i := range subgroups {
+		apiOrgs[i] = convert.ToOrganization(ctx, subgroups[i])
+	}
+
+	ctx.JSON(http.StatusOK, &apiOrgs)
+}
+
+// CreateSubgroup api for create a subgroup
+func CreateSubgroup(ctx *context.APIContext) {
+	// swagger:operation POST /orgs/{org}/subgroups organization orgCreateSubgroup
+	// ---
+	// summary: Create a subgroup
+	// consumes:
+	// - application/json
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: org
+	//   in: path
+	//   description: name of the parent organization
+	//   type: string
+	//   required: true
+	// - name: organization
+	//   in: body
+	//   required: true
+	//   schema:
+	//     "$ref": "#/definitions/CreateOrgOption"
+	// responses:
+	//   "201":
+	//     "$ref": "#/responses/Organization"
+	//   "403":
+	//     "$ref": "#/responses/forbidden"
+	//   "422":
+	//     "$ref": "#/responses/validationError"
+	
+	form := web.GetForm(ctx).(*api.CreateOrgOption)
+
+	// Validate subgroup name
+	if strings.Contains(form.UserName, "/") {
+		ctx.APIError(http.StatusUnprocessableEntity, errors.New("subgroup name cannot contain '/'"))
+		return
+	}
+
+	visibility := api.VisibleTypePublic
+	if form.Visibility != "" {
+		visibility = api.VisibilityModes[form.Visibility]
+	}
+
+	org := &organization.Organization{
+		Name:                      form.UserName,
+		FullName:                  form.FullName,
+		Email:                     form.Email,
+		Description:               form.Description,
+		Website:                   form.Website,
+		Location:                  form.Location,
+		IsActive:                  true,
+		Type:                      user_model.UserTypeOrganization,
+		Visibility:                visibility,
+		RepoAdminChangeTeamAccess: form.RepoAdminChangeTeamAccess,
+	}
+	
+	// Set the parent ID
+	org.AsUser().ParentID = ctx.Org.Organization.ID
+
+	if err := organization.CreateOrganization(ctx, org, ctx.Doer); err != nil {
+		if user_model.IsErrUserAlreadyExist(err) ||
+			db.IsErrNameReserved(err) ||
+			db.IsErrNameCharsNotAllowed(err) ||
+			db.IsErrNamePatternNotAllowed(err) ||
+			organization.IsErrSubgroupDepthExceeded(err) {
+			ctx.APIError(http.StatusUnprocessableEntity, err)
+		} else {
+			ctx.APIErrorInternal(err)
+		}
+		return
+	}
+
+	ctx.JSON(http.StatusCreated, convert.ToOrganization(ctx, org))
 }
